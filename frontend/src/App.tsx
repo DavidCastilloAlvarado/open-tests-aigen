@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { gql, useMutation, useQuery } from "@apollo/client";
 
 type ActiveConfig = {
@@ -441,6 +441,32 @@ function backendApiBaseUrl(): string {
   return graphqlUrl.replace(/\/graphql\/?$/, "").replace(/\/+$/, "");
 }
 
+function providerDisplayName(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return "Configured provider";
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return "Local provider";
+    }
+    if (hostname.includes("azure")) {
+      return "Azure OpenAI";
+    }
+    if (hostname.includes("openai")) {
+      return "OpenAI-compatible";
+    }
+
+    const label = hostname.split(".")[0] || hostname;
+    return label.charAt(0).toUpperCase() + label.slice(1);
+  } catch {
+    return "Configured provider";
+  }
+}
+
 const PDF_ENCODER = new TextEncoder();
 
 function pdfByteLength(value: string): number {
@@ -603,6 +629,7 @@ export function App() {
   const [baseUrl, setBaseUrl] = useState("http://localhost:11434/v1");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-4.1-mini");
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
 
   const [session, setSession] = useState<SessionState | null>(null);
   const [sections, setSections] = useState<SectionState[]>([]);
@@ -653,6 +680,7 @@ export function App() {
   const [completeSession] = useMutation(COMPLETE_SESSION);
   const [generateReportMutation] = useMutation(GENERATE_REPORT);
 
+  const activeProviderConfig = data?.activeProviderConfig || null;
   const hasConfig = useMemo(() => Boolean(data?.activeProviderConfig), [data]);
   const activeSection = sections[currentSectionIndex] || null;
   const activeSectionItems = activeSection ? sectionItemsById[activeSection.id] || [] : [];
@@ -705,6 +733,9 @@ export function App() {
     : currentSectionIndex < sections.length - 1
       ? "Next Section"
       : "Finish Test";
+  const activeProviderSummary = hasConfig
+    ? `${providerDisplayName(activeProviderConfig?.baseUrl || "")} (${activeProviderConfig?.model || "-"})`
+    : "No provider configured yet.";
 
   const activeClockSeconds = activeSection?.sectionType === "SPEAKING" ? speakingQuestionSecondsRemaining : sectionSecondsRemaining;
   const clockValue = activeClockSeconds === null ? "--:--" : formatDuration(activeClockSeconds);
@@ -1191,6 +1222,7 @@ export function App() {
     try {
       await saveConfig({ variables: { input: { baseUrl, apiKey, model } } });
       await refetch();
+      setIsConfigModalOpen(false);
     } catch (error) {
       setRunnerError(error instanceof Error ? error.message : "Could not save provider configuration.");
     }
@@ -1716,39 +1748,73 @@ export function App() {
 
       <main className="page">
         {viewMode === "home" && (
-          <section className="card">
-            <h2>Home</h2>
-            <p>Configure your provider and start the test. The test interface is separated from this home page.</p>
+          <section className="home-shell">
+            <article className="card home-stage">
+              <div className="home-stage-header">
+                <p className="home-stage-title">Open Tests AIGen</p>
+                <p className="home-stage-subtitle">Configure your provider once, then start the TOEFL-like test flow.</p>
+              </div>
 
-            <div className="home-grid">
-              <label>
-                Base URL
-                <input value={baseUrl} onChange={(event: ChangeEvent<HTMLInputElement>) => setBaseUrl(event.target.value)} />
-              </label>
-              <label>
-                API Key
-                <input value={apiKey} onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKey(event.target.value)} />
-              </label>
-              <label>
-                Model
-                <input value={model} onChange={(event: ChangeEvent<HTMLInputElement>) => setModel(event.target.value)} />
-              </label>
-            </div>
+              <div className="home-stage-body">
+                <button
+                  type="button"
+                  className="home-start-btn"
+                  onClick={onStartSession}
+                  disabled={!hasConfig || creatingSession || modelBusy || savingAnswer}
+                >
+                  {creatingSession ? "Starting..." : "Start TOEFL Test"}
+                </button>
 
-            <div className="home-actions">
-              <button type="button" onClick={onSaveConfig} disabled={savingConfig}>
-                {savingConfig ? "Saving..." : "Save Config"}
-              </button>
-              <button type="button" onClick={onStartSession} disabled={!hasConfig || creatingSession || modelBusy || savingAnswer}>
-                {creatingSession ? "Starting..." : "Start TOEFL Test"}
-              </button>
-            </div>
+                <button type="button" className="secondary-btn home-config-btn" onClick={() => setIsConfigModalOpen(true)}>
+                  Configure OpenAI
+                </button>
 
-            <p>
-              Active provider: {hasConfig ? `${data?.activeProviderConfig?.baseUrl} (${data?.activeProviderConfig?.model})` : "none"}
-            </p>
+                <div className="home-provider-panel">
+                  <p className="home-provider-label">Active provider</p>
+                  <p className="home-provider-value">{activeProviderSummary}</p>
+                  {activeProviderConfig?.maskedApiKey && <p className="home-provider-meta">API key: {activeProviderConfig.maskedApiKey}</p>}
+                </div>
 
-            {runnerError && <p className="error-text">{runnerError}</p>}
+                {runnerError && <p className="error-text">{runnerError}</p>}
+              </div>
+            </article>
+
+            {isConfigModalOpen && (
+              <div className="modal-backdrop" onClick={() => setIsConfigModalOpen(false)}>
+                <article className="card config-modal" onClick={(event: MouseEvent<HTMLElement>) => event.stopPropagation()}>
+                  <div className="config-modal-header">
+                    <div>
+                      <h3>Configure provider</h3>
+                      <p>Keep your current flow: base URL, API key, and model.</p>
+                    </div>
+                    <button type="button" className="secondary-btn modal-close-btn" onClick={() => setIsConfigModalOpen(false)}>
+                      Close
+                    </button>
+                  </div>
+
+                  <div className="config-form-grid">
+                    <label>
+                      Base URL (openai Compatible .../openai/v1)
+                      <input value={baseUrl} onChange={(event: ChangeEvent<HTMLInputElement>) => setBaseUrl(event.target.value)} />
+                    </label>
+                    <label>
+                      API Key
+                      <input value={apiKey} onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKey(event.target.value)} />
+                    </label>
+                    <label>
+                      Model
+                      <input value={model} onChange={(event: ChangeEvent<HTMLInputElement>) => setModel(event.target.value)} />
+                    </label>
+                  </div>
+
+                  <div className="config-modal-actions">
+                    <button type="button" onClick={onSaveConfig} disabled={savingConfig}>
+                      {savingConfig ? "Saving..." : "Save Config"}
+                    </button>
+                  </div>
+                </article>
+              </div>
+            )}
           </section>
         )}
 
