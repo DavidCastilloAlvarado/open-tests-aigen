@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SessionStatus {
+  STARTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELED
+}
+
+enum SectionType {
+  READING
+  LISTENING
+  SPEAKING
+  WRITING
+}
+
+model ProviderConfig {
+  id              String   @id @default(uuid())
+  baseUrl         String
+  model           String
+  apiKeyEncrypted String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ExamBlueprint {
+  id         String   @id @default(uuid())
+  code       String   @unique
+  isActive   Boolean  @default(false)
+  configJson Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  sessions TestSession[]
+}
+
+model TestSession {
+  id                  String        @id @default(uuid())
+  blueprintId         String
+  status              SessionStatus @default(STARTED)
+  startedAt           DateTime      @default(now())
+  completedAt         DateTime?
+  overallScore1to6    Float?
+  overallScore0to120  Float?
+
+  blueprint           ExamBlueprint @relation(fields: [blueprintId], references: [id])
+  sections            SectionInstance[]
+  events              SessionEvent[]
+  report              AnalysisReport?
+  contextSnapshots    GenerationContextSnapshot[]
+}
+
+model SectionInstance {
+  id               String    @id @default(uuid())
+  sessionId        String
+  sectionType      SectionType
+  orderIndex       Int
+  timeLimitSeconds Int
+  startedAt        DateTime?
+  completedAt      DateTime?
+  score1to6        Float?
+
+  session          TestSession @relation(fields: [sessionId], references: [id])
+  items            TestItem[]
+  contexts         GenerationContextSnapshot[]
+}
+
+model TestItem {
+  id                String   @id @default(uuid())
+  sectionInstanceId String
+  taskType          String
+  promptPayload     Json
+  audioUrl          String?
+  metadataJson      Json
+  createdAt         DateTime @default(now())
+
+  sectionInstance   SectionInstance @relation(fields: [sectionInstanceId], references: [id])
+  answers           Answer[]
+}
+
+model Answer {
+  id              String   @id @default(uuid())
+  testItemId      String
+  responsePayload Json
+  submittedAt     DateTime @default(now())
+  scoreJson       Json?
+
+  testItem        TestItem @relation(fields: [testItemId], references: [id])
+}
+
+model GenerationContextSnapshot {
+  id              String   @id @default(uuid())
+  sessionId       String
+  sectionId       String
+  targetItemOrder Int
+  contextJson     Json
+  createdAt       DateTime @default(now())
+
+  session         TestSession      @relation(fields: [sessionId], references: [id])
+  section         SectionInstance  @relation(fields: [sectionId], references: [id])
+
+  @@index([sectionId, targetItemOrder])
+}
+
+model AnalysisReport {
+  id         String   @id @default(uuid())
+  sessionId  String   @unique
+  reportJson Json
+  pdfUrl     String?
+  createdAt  DateTime @default(now())
+
+  session    TestSession @relation(fields: [sessionId], references: [id])
+}
+
+model SessionEvent {
+  id        String   @id @default(uuid())
+  sessionId String
+  eventType String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  session   TestSession @relation(fields: [sessionId], references: [id])
+}
