@@ -1,0 +1,15 @@
+node_modules
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+coverage
+dist
+build
+backend/node_modules
+backend/dist
+frontend/node_modules
+frontend/dist
+generated-audio
+backend/generated-audio
