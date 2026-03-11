@@ -1,5 +1,7 @@
 # Open Tests AIGen
 
+![alt text](image.png)
+
 TOEFL-like 2026 simulator with:
 - React frontend (Vite)
 - NestJS + GraphQL backend
