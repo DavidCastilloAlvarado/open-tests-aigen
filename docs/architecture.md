@@ -62,7 +62,7 @@ Scope: single-user TOEFL-like simulator with dynamic generation, listening audio
    - builds `contextPayload` (prior generated items, prior responses, anti-repetition topic hints),
    - persists `generation_context_snapshot`,
    - generates items using provider:
-     - Reading bundle: 10 questions
+     - Reading blocks: fixed 48-item path across Complete the Words, Read in Daily Life, and Academic Passage tasks
      - Listening bundle: 11 questions (lecture + conversation)
      - Speaking/Writing: single item
 3. Backend stores generated items and metadata (`questionType`, `questionIndex`, `questionSetSize`, `stimulusType`, `stimulusGroupId`).

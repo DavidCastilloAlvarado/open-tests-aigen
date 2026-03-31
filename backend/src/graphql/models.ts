@@ -86,3 +86,33 @@ export class AnalysisReportModel {
   @Field(() => String, { nullable: true })
   pdfUrl!: string | null;
 }
+
+@ObjectType()
+export class RecentResultSectionScoreModel {
+  @Field(() => SectionType)
+  sectionType!: SectionType;
+
+  @Field(() => Float)
+  score!: number;
+}
+
+@ObjectType()
+export class RecentResultModel {
+  @Field(() => ID)
+  reportId!: string;
+
+  @Field(() => ID)
+  sessionId!: string;
+
+  @Field(() => String)
+  createdAt!: string;
+
+  @Field(() => Float, { nullable: true })
+  overallScore1to6!: number | null;
+
+  @Field(() => Float, { nullable: true })
+  overallScore0to120!: number | null;
+
+  @Field(() => [RecentResultSectionScoreModel])
+  sectionScores!: RecentResultSectionScoreModel[];
+}

@@ -68,6 +68,37 @@ export class ReportService {
     private readonly providerConfigService: ProviderConfigService,
   ) {}
 
+  async listRecentResults(limit = 20) {
+    const take = Math.min(Math.max(1, Math.trunc(limit || 20)), 20);
+    const reports = await this.prisma.analysisReport.findMany({
+      take,
+      orderBy: { createdAt: "desc" },
+      include: {
+        session: {
+          include: {
+            sections: {
+              orderBy: { orderIndex: "asc" },
+            },
+          },
+        },
+      },
+    });
+
+    return reports.map((report: any) => ({
+      reportId: report.id,
+      sessionId: report.sessionId,
+      createdAt: report.createdAt.toISOString(),
+      overallScore1to6: report.session.overallScore1to6,
+      overallScore0to120: report.session.overallScore0to120,
+      sectionScores: report.session.sections
+        .filter((section: any) => typeof section.score1to6 === "number")
+        .map((section: any) => ({
+          sectionType: section.sectionType,
+          score: section.score1to6 as number,
+        })),
+    }));
+  }
+
   async generateReport(sessionId: string) {
     const session = await this.prisma.testSession.findUnique({
       where: { id: sessionId },
@@ -1089,7 +1120,7 @@ export class ReportService {
       if (section.sectionType === "READING" || section.sectionType === "LISTENING") {
         const rows = args.objectiveReview.filter((entry) => entry.sectionType === section.sectionType);
         if (rows.length === 0) {
-          return { sectionId: section.id, sectionType: section.sectionType, score: 3.5 };
+          return { sectionId: section.id, sectionType: section.sectionType, score: 1 };
         }
         const correctCount = rows.filter((entry) => entry.isCorrect).length;
         const score = this.roundHalf(Math.max(1, (correctCount / rows.length) * 6));
@@ -1100,14 +1131,14 @@ export class ReportService {
         const bands = args.speakingInsights
           .map((entry) => entry.estimatedBand)
           .filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry));
-        const score = bands.length > 0 ? this.roundHalf(bands.reduce((sum, band) => sum + band, 0) / bands.length) : 3.5;
+        const score = bands.length > 0 ? this.roundHalf(bands.reduce((sum, band) => sum + band, 0) / bands.length) : 1;
         return { sectionId: section.id, sectionType: section.sectionType, score };
       }
 
       const bands = args.writingInsights
         .map((entry) => entry.estimatedBand)
         .filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry));
-      const score = bands.length > 0 ? this.roundHalf(bands.reduce((sum, band) => sum + band, 0) / bands.length) : 3.5;
+      const score = bands.length > 0 ? this.roundHalf(bands.reduce((sum, band) => sum + band, 0) / bands.length) : 1;
       return { sectionId: section.id, sectionType: section.sectionType, score };
     });
   }
@@ -1177,6 +1208,10 @@ export class ReportService {
       const normalized = candidate.trim();
       if (!normalized) {
         continue;
+      }
+
+      if (options.length === 0) {
+        return normalized;
       }
 
       const exactMatch = options.find((option) => option.trim().toLowerCase() === normalized.toLowerCase());

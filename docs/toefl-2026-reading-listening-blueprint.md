@@ -1,12 +1,12 @@
 # TOEFL 2026 Reading + Listening Blueprint (Simulator Implementation)
 
-Last updated: 2026-03-10
+Last updated: 2026-03-15
 
 ## 1) Why this blueprint exists
 
-The simulator now generates **full question sets** for Reading and Listening instead of single isolated questions.
+The simulator now generates **full structured blocks** for Reading and Listening instead of isolated single questions.
 
-- Reading set = **1 academic passage + 10 questions**
+- Reading section = **fixed 48-item max-path simulation**
 - Listening set = **1 lecture + 1 conversation + 11 questions total**
 
 This keeps item flow closer to official TOEFL-style task design while preserving the project rule: generated content must be original.
@@ -14,19 +14,18 @@ This keeps item flow closer to official TOEFL-style task design while preserving
 ## 2) Research basis (public ETS pages)
 
 ### Reading
-- ETS Reading section page states:
-  - 2 passages
-  - each ~700 words
-  - 10 questions per passage
-- Source: https://www.ets.org/toefl/test-takers/ibt/about/content/reading.html
-
-Question families listed by ETS Reading materials:
-- factual / negative factual
-- inference / rhetorical purpose
-- vocabulary
-- sentence simplification
-- insert text
-- prose summary
+- Public 2026 summaries indicate the section is adaptive and combines three task families:
+  - Complete the Words
+  - Read in Daily Life
+  - Read an Academic Passage
+- Ground-truth summary in this repo:
+  - `docs/groundTrue/toelf-2026.md`
+- Supporting public breakdown used to lock the simulator order:
+  - https://www.toeflresources.com/toefl-reading/
+- The public sources consistently indicate:
+  - adaptive routing + second module behavior
+  - total Reading range of roughly 35-48 items
+  - short practical texts and shorter academic passages than legacy TOEFL forms
 
 ### Listening
 - ETS Listening section page states:
@@ -47,28 +46,64 @@ Question families listed by ETS Listening materials:
 - ETS public 2026 materials indicate adaptivity and revised task framing, but the fully deterministic item-count matrix is not fully published in machine-readable detail.
 - In this simulator, we enforce a fixed, transparent blueprint for quality control and repeatability.
 
-## 3) Implemented Reading question-type strategy (10 items)
+## 3) Implemented Reading strategy (48 items)
 
-For `Read an Academic Passage` tasks, the simulator uses this fixed sequence:
+The simulator now enforces a transparent **48-item maximum Reading path** aligned to the 2026 task families.
 
-| Order | Question type |
-|---|---|
-| 1 | factual_information |
-| 2 | negative_factual_information |
-| 3 | inference |
-| 4 | rhetorical_purpose |
-| 5 | vocabulary_in_context |
-| 6 | vocabulary_in_context |
-| 7 | sentence_simplification |
-| 8 | insert_text |
-| 9 | detail |
-| 10 | prose_summary |
+This corresponds to a deterministic **routing module + hard module** style path:
 
-Stimulus constraints:
-- 620-780 words
-- university textbook-like expository style
-- B2-C1 academic vocabulary with context clues
-- topic domains biased toward science/social-science/humanities university content
+### Routing module (33 items)
+
+| Order range | Task block | Item count | Item/question order |
+|---|---|---|---|
+| 1-10 | Complete the Words A | 10 | `complete_the_words` x10 |
+| 11-20 | Complete the Words B | 10 | `complete_the_words` x10 |
+| 21-22 | Read in Daily Life (short) A | 2 | `main_purpose`, `detail` |
+| 23-24 | Read in Daily Life (short) B | 2 | `detail`, `inference` |
+| 25-28 | Read in Daily Life (long) | 4 | `main_purpose`, `detail`, `negative_factual_information`, `inference` |
+| 29-33 | Academic Passage A | 5 | `factual_information`, `negative_factual_information`, `rhetorical_purpose`, `vocabulary_in_context`, `important_idea` |
+
+### Hard module (15 items)
+
+| Order range | Task block | Item count | Item/question order |
+|---|---|---|---|
+| 34-43 | Complete the Words C | 10 | `complete_the_words` x10 |
+| 44-48 | Academic Passage B | 5 | `factual_information`, `inference`, `vocabulary_in_context`, `negative_factual_information`, `paragraph_relationships` |
+
+### Reading stimulus constraints by block
+
+#### Complete the Words
+- Short academic paragraph
+- About 70-100 words target
+- 10 text-entry blanks per block
+- Most blanks should appear in the second sentence
+
+#### Read in Daily Life (short)
+- Practical non-academic text
+- About 15-60 words
+- 2 multiple-choice questions
+
+#### Read in Daily Life (long)
+- Practical non-academic text
+- About 90-150 words
+- 4 multiple-choice questions in the fixed simulator max path
+
+#### Read an Academic Passage
+- Short academic text
+- About 170-240 words
+- 5 multiple-choice questions per passage
+- Across the two academic blocks, the simulator covers these 2026-style academic families:
+  - factual_information
+  - negative_factual_information
+  - rhetorical_purpose
+  - vocabulary_in_context
+  - inference
+  - paragraph_relationships
+  - important_idea
+
+Implementation note:
+- This is a simulator-side fixed max path chosen for repeatability and QA.
+- If public ETS material later confirms a stricter official ordering/count matrix, update `READING_BLOCK_BLUEPRINT` first.
 
 ## 4) Implemented Listening question-type strategy (11 items)
 

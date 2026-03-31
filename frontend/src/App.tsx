@@ -124,6 +124,20 @@ type FinalReportPayload = {
   generatedAt?: string;
 };
 
+type RecentResultSectionScore = {
+  sectionType: SectionType;
+  score: number;
+};
+
+type RecentResult = {
+  reportId: string;
+  sessionId: string;
+  createdAt: string;
+  overallScore1to6: number | null;
+  overallScore0to120: number | null;
+  sectionScores: RecentResultSectionScore[];
+};
+
 type SpeakingAnalysisPayload = {
   transcript: string;
   analysis: string;
@@ -133,8 +147,10 @@ type SpeakingAnalysisPayload = {
 
 type SpeakingPhase = "preparation" | "ready_to_record" | "recording" | "processing" | "completed";
 
+const SECTION_ORDER: SectionType[] = ["READING", "LISTENING", "SPEAKING", "WRITING"];
+
 const ITEMS_PER_SECTION: Record<SectionType, number> = {
-  READING: 20,
+  READING: 48,
   LISTENING: 11,
   SPEAKING: 4,
   WRITING: 2,
@@ -208,6 +224,22 @@ const GENERATE_REPORT = gql`
     generateReport(sessionId: $sessionId) {
       id
       reportJson
+    }
+  }
+`;
+
+const RECENT_RESULTS = gql`
+  query RecentResults($limit: Int) {
+    recentResults(limit: $limit) {
+      reportId
+      sessionId
+      createdAt
+      overallScore1to6
+      overallScore0to120
+      sectionScores {
+        sectionType
+        score
+      }
     }
   }
 `;
@@ -467,6 +499,41 @@ function providerDisplayName(baseUrl: string): string {
   }
 }
 
+function sectionDisplayName(sectionType: string): string {
+  const normalized = sectionType.trim().toUpperCase();
+  if (normalized === "READING") {
+    return "Reading";
+  }
+  if (normalized === "LISTENING") {
+    return "Listening";
+  }
+  if (normalized === "SPEAKING") {
+    return "Speaking";
+  }
+  if (normalized === "WRITING") {
+    return "Writing";
+  }
+  return sectionType;
+}
+
+function formatHistoryTimestamp(value: string): string {
+  if (!value) {
+    return "Unknown time";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString();
+}
+
+function findRecentSectionScore(result: RecentResult, sectionType: SectionType): number | null {
+  const match = result.sectionScores.find((entry: RecentResultSectionScore) => entry.sectionType === sectionType);
+  return typeof match?.score === "number" ? match.score : null;
+}
+
 const PDF_ENCODER = new TextEncoder();
 
 function pdfByteLength(value: string): number {
@@ -630,6 +697,7 @@ export function App() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-4.1-mini");
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [isSectionMenuOpen, setIsSectionMenuOpen] = useState(false);
 
   const [session, setSession] = useState<SessionState | null>(null);
   const [sections, setSections] = useState<SectionState[]>([]);
@@ -673,6 +741,10 @@ export function App() {
   const apiBaseUrl = useMemo(() => backendApiBaseUrl(), []);
 
   const { data, refetch } = useQuery<{ activeProviderConfig: ActiveConfig | null }>(ACTIVE_CONFIG);
+  const { data: recentResultsData, refetch: refetchRecentResults } = useQuery<{ recentResults: RecentResult[] }, { limit: number }>(
+    RECENT_RESULTS,
+    { variables: { limit: 20 } },
+  );
   const [saveConfig, { loading: savingConfig }] = useMutation(SAVE_CONFIG);
   const [startSession, { loading: creatingSession }] = useMutation(START_SESSION);
   const [nextTask] = useMutation(NEXT_TASK);
@@ -733,6 +805,8 @@ export function App() {
     : currentSectionIndex < sections.length - 1
       ? "Next Section"
       : "Finish Test";
+  const recentResults = useMemo(() => recentResultsData?.recentResults || [], [recentResultsData]);
+  const historicalResults = useMemo(() => recentResults.slice().reverse(), [recentResults]);
   const activeProviderSummary = hasConfig
     ? `${providerDisplayName(activeProviderConfig?.baseUrl || "")} (${activeProviderConfig?.model || "-"})`
     : "No provider configured yet.";
@@ -777,6 +851,12 @@ export function App() {
       percentage: Math.round((correct / Math.max(total, 1)) * 100),
     };
   }, [finalReport]);
+
+  useEffect(() => {
+    if (viewMode !== "test" || sessionComplete) {
+      setIsSectionMenuOpen(false);
+    }
+  }, [viewMode, sessionComplete, currentSectionIndex]);
 
   useEffect(() => {
     return () => {
@@ -1180,6 +1260,7 @@ export function App() {
     setSession(null);
     setSections([]);
     setCurrentSectionIndex(0);
+    setIsSectionMenuOpen(false);
     setSectionItemsById({});
     setSectionCursorById({});
     setResponsesByItemId({});
@@ -1528,6 +1609,7 @@ export function App() {
     setRunnerError("");
     setSessionComplete(false);
     setFinalReport(null);
+    setIsSectionMenuOpen(false);
 
     try {
       const result = await startSession();
@@ -1569,9 +1651,78 @@ export function App() {
     const reportResult = await generateReportMutation({ variables: { sessionId: session.id } });
     const reportRaw = reportResult.data?.generateReport?.reportJson;
     setFinalReport(asFinalReportPayload(reportRaw));
+    await refetchRecentResults();
 
     if (timeoutReached) {
       setRunnerError("Time is over. The test is now completed.");
+    }
+  }
+
+  async function persistCurrentAnswerForPartialEvaluation(): Promise<void> {
+    if (!session || !activeSection || !item) {
+      return;
+    }
+
+    if (activeSection.sectionType === "SPEAKING" && item.promptPayload?.inputType === "text") {
+      const text = answerText.trim();
+      if (text) {
+        await persistCurrentAnswer({ text });
+        return;
+      }
+
+      if (recordedAudioBlob && recordedAudioBlob.size > 0) {
+        try {
+          const transcript = await submitSpeakingAudioForAnalysis(recordedAudioBlob);
+          const normalizedTranscript = transcript.trim();
+          await persistCurrentAnswer(normalizedTranscript ? { text: normalizedTranscript } : { skipped: true });
+          return;
+        } catch {
+          await persistCurrentAnswer({ skipped: true });
+          return;
+        }
+      }
+
+      await persistCurrentAnswer({ skipped: true });
+      return;
+    }
+
+    await persistCurrentAnswer(buildResponseDraftForCurrentItem(item));
+  }
+
+  async function onJumpToSection(targetSectionIndex: number): Promise<void> {
+    if (!session || targetSectionIndex <= currentSectionIndex || targetSectionIndex >= sections.length) {
+      return;
+    }
+
+    setRunnerError("");
+    setIsSectionMenuOpen(false);
+
+    try {
+      await persistCurrentAnswerForPartialEvaluation();
+      stopTranscriptAudio();
+      setShowListeningTranscript(false);
+
+      const targetSection = sections[targetSectionIndex];
+      setCurrentSectionIndex(targetSectionIndex);
+      await ensureSectionHasFirstQuestion(session.id, targetSection);
+    } catch (error) {
+      setRunnerError(error instanceof Error ? error.message : "Could not jump to the selected section.");
+    }
+  }
+
+  async function onFinalizeCurrentEvaluation(): Promise<void> {
+    if (!session || sessionComplete) {
+      return;
+    }
+
+    setRunnerError("");
+    setIsSectionMenuOpen(false);
+
+    try {
+      await persistCurrentAnswerForPartialEvaluation();
+      await completeSessionAndLoadReport(false);
+    } catch (error) {
+      setRunnerError(error instanceof Error ? error.message : "Could not generate the final evaluation.");
     }
   }
 
@@ -1582,6 +1733,7 @@ export function App() {
 
     stopTranscriptAudio();
     setShowListeningTranscript(false);
+    setIsSectionMenuOpen(false);
 
     const nextSectionIndex = currentSectionIndex + 1;
     if (nextSectionIndex < sections.length) {
@@ -1739,11 +1891,63 @@ export function App() {
           <p className="app-subtitle">TOEFL-like simulator (independent, not ETS-affiliated)</p>
         </div>
 
-        <button className="home-button" type="button" onClick={onHomeClick}>
-          HOME
-        </button>
+        <div className="header-controls">
+          {viewMode === "test" && session && !sessionComplete && (
+            <div className="section-menu-anchor">
+              <button
+                className="secondary-btn menu-toggle"
+                type="button"
+                onClick={() => setIsSectionMenuOpen((previous: boolean) => !previous)}
+                aria-expanded={isSectionMenuOpen}
+                aria-label="Open section navigation menu"
+              >
+                ☰
+              </button>
 
-        <div className="clock-box">{showClock ? clockValue : "--:--"}</div>
+              {isSectionMenuOpen && (
+                <div className="section-menu-panel">
+                  <p className="section-menu-title">Evaluation Sections</p>
+
+                  <div className="section-menu-list">
+                    {sections.map((section: SectionState, index: number) => {
+                      const isCurrentSection = index === currentSectionIndex;
+                      const isPastSection = index < currentSectionIndex;
+                      const canJumpForward = index > currentSectionIndex;
+
+                      return (
+                        <button
+                          key={section.id}
+                          type="button"
+                          className={`section-menu-item ${isCurrentSection ? "section-menu-item-current" : ""}`.trim()}
+                          onClick={() => void onJumpToSection(index)}
+                          disabled={isBusy || !canJumpForward}
+                        >
+                          <span>{sectionDisplayName(section.sectionType)}</span>
+                          <span>{isCurrentSection ? "Current" : isPastSection ? "Locked" : "Jump"}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="section-menu-actions">
+                    <button type="button" className="secondary-btn" onClick={onHomeClick} disabled={isBusy}>
+                      Stop Evaluation
+                    </button>
+                    <button type="button" onClick={() => void onFinalizeCurrentEvaluation()} disabled={isBusy}>
+                      Final Evaluation
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <button className="home-button" type="button" onClick={onHomeClick}>
+            HOME
+          </button>
+
+          <div className="clock-box">{showClock ? clockValue : "--:--"}</div>
+        </div>
       </header>
 
       <main className="page">
@@ -1777,6 +1981,51 @@ export function App() {
 
                 {runnerError && <p className="error-text">{runnerError}</p>}
               </div>
+            </article>
+
+            <article className="card home-history-card">
+              <div className="home-history-header">
+                <p className="home-stage-title">Historical Results</p>
+                <p className="home-stage-subtitle">Latest 20 evaluated attempts ordered by timestamp. Newest attempt is shown on the right.</p>
+              </div>
+
+              {historicalResults.length === 0 ? (
+                <p className="task-meta">No evaluated attempts yet. Finish a test to populate the history charts.</p>
+              ) : (
+                <div className="history-chart-stack">
+                  {SECTION_ORDER.map((sectionType: SectionType) => {
+                    const sectionPoints = historicalResults.map((result: RecentResult, index: number) => ({
+                      attempt: index + 1,
+                      score: findRecentSectionScore(result, sectionType),
+                      timestamp: formatHistoryTimestamp(result.createdAt),
+                    }));
+
+                    return (
+                      <div key={sectionType} className="history-chart-card">
+                        <div className="history-chart-header">
+                          <h3>{sectionDisplayName(sectionType)}</h3>
+                          <p className="task-meta">Band score history (1-6)</p>
+                        </div>
+
+                        <div className="history-bars" role="img" aria-label={`${sectionDisplayName(sectionType)} historical results chart`}>
+                          {sectionPoints.map((point: { attempt: number; score: number | null; timestamp: string }) => (
+                            <div key={`${sectionType}-${point.attempt}-${point.timestamp}`} className="history-bar-column" title={`${point.timestamp} · ${point.score ?? "No score"}`}>
+                              <div className="history-bar-track">
+                                {point.score !== null ? (
+                                  <div className="history-bar-fill" style={{ height: `${Math.max(14, Math.round((point.score / 6) * 100))}%` }} />
+                                ) : (
+                                  <div className="history-bar-missing" />
+                                )}
+                              </div>
+                              <span className="history-bar-label">{point.attempt}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </article>
 
             {isConfigModalOpen && (
@@ -1849,6 +2098,18 @@ export function App() {
 
             {runnerError && <p className="error-text">{runnerError}</p>}
             {sessionComplete && <p className="success-text">Session completed. Final evaluation is shown below.</p>}
+
+            {sessionComplete && !finalReport && (
+              <section className="card loading-card final-evaluation-loading-card">
+                <div className="loading-head">
+                  <span className="loading-spinner" aria-hidden="true" />
+                  <p className="task-meta">Preparing your final evaluation...</p>
+                </div>
+                <div className="loading-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-label="Final evaluation loading">
+                  <div className="loading-fill loading-fill-indeterminate" />
+                </div>
+              </section>
+            )}
 
             {sessionComplete && finalReport && (
               <section className="card report-card">

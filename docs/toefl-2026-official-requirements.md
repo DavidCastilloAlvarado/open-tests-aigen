@@ -73,7 +73,7 @@ The official content page lists these task labels:
 1. **4-section flow implemented**
    - Reading, Listening, Speaking, Writing sections are created from blueprint `toefl_ibt_2026_v1`.
 2. **Reading/Listening structure implemented with fixed transparent blueprint**
-   - Reading: 10-question bundle with fixed type order.
+   - Reading: fixed 48-item path using Complete the Words, Read in Daily Life, and short Academic Passage blocks.
    - Listening: 11-question bundle (lecture + conversation) with fixed type distribution.
 3. **Speaking timing behavior updated**
    - Simulator now enforces speaking time **per question** in frontend using:
@@ -120,7 +120,7 @@ For the current codebase implementation details, see:
 - `docs/toefl-2026-reading-listening-blueprint.md`
 
 Highlights:
-1. Reading now generates 1 passage + 10 questions in a fixed TOEFL-style type sequence.
+1. Reading now generates a fixed 48-item TOEFL 2026-style path with deterministic block order and question-type coverage.
 2. Listening now generates 1 lecture (6 questions) + 1 conversation (5 questions) with explicit type distribution.
 3. Listening stimuli are accompanied by generated/returned audio URLs for playable items.
 4. Speaking question payloads now include per-question timing metadata consumed by frontend timers.
