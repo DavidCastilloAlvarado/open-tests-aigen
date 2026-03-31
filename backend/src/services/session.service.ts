@@ -19,7 +19,7 @@ export class SessionService {
         isActive: true,
         configJson: {
           sections: [
-            { sectionType: "READING", timeLimitSeconds: 1800 },
+            { sectionType: "READING", timeLimitSeconds: 1620 },
             { sectionType: "LISTENING", timeLimitSeconds: 2100 },
             { sectionType: "SPEAKING", timeLimitSeconds: 1020 },
             { sectionType: "WRITING", timeLimitSeconds: 1740 },

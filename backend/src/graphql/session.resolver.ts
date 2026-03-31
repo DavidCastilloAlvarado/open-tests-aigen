@@ -1,6 +1,6 @@
-import { Args, Mutation, Query, Resolver } from "@nestjs/graphql";
+import { Args, Int, Mutation, Query, Resolver } from "@nestjs/graphql";
 import { SaveAnswerInput, SaveProviderConfigInput, StartSessionInput, NextTaskInput } from "./inputs";
-import { AnalysisReportModel, ProviderConfigModel, TestItemModel, TestSessionModel } from "./models";
+import { AnalysisReportModel, ProviderConfigModel, RecentResultModel, TestItemModel, TestSessionModel } from "./models";
 import { ProviderConfigService } from "../services/provider-config.service";
 import { SessionService } from "../services/session.service";
 import { GenerationService } from "../services/generation.service";
@@ -40,6 +40,11 @@ export class SessionResolver {
   @Query(() => TestSessionModel, { nullable: true })
   async session(@Args("id") id: string): Promise<TestSessionModel | null> {
     return this.sessionService.getSession(id);
+  }
+
+  @Query(() => [RecentResultModel])
+  async recentResults(@Args("limit", { type: () => Int, nullable: true }) limit?: number): Promise<RecentResultModel[]> {
+    return this.reportService.listRecentResults(limit);
   }
 
   @Mutation(() => TestItemModel)

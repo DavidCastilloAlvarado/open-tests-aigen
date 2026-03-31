@@ -110,20 +110,88 @@ const RANDOM_CHUNK_VOICE_PROFILES: TtsVoiceProfile[] = [
   },
 ];
 
-const READING_QUESTION_TYPE_BLUEPRINT = [
-  "factual_information",
-  "negative_factual_information",
-  "inference",
-  "rhetorical_purpose",
-  "vocabulary_in_context",
-  "vocabulary_in_context",
-  "sentence_simplification",
-  "insert_text",
-  "detail",
-  "prose_summary",
-] as const;
+type ReadingPromptKind = "complete_words" | "daily_life_short" | "daily_life_long" | "academic";
 
-const READING_PASSAGE_COUNT = 2;
+type ReadingBlockBlueprint = {
+  module: "routing" | "hard";
+  promptKind: ReadingPromptKind;
+  taskType: "complete_the_words" | "read_in_daily_life" | "read_an_academic_passage";
+  itemCount: number;
+  questionTypes: string[];
+};
+
+const READING_BLOCK_BLUEPRINT: ReadingBlockBlueprint[] = [
+  {
+    module: "routing",
+    promptKind: "complete_words",
+    taskType: "complete_the_words",
+    itemCount: 10,
+    questionTypes: Array.from({ length: 10 }, () => "complete_the_words"),
+  },
+  {
+    module: "routing",
+    promptKind: "complete_words",
+    taskType: "complete_the_words",
+    itemCount: 10,
+    questionTypes: Array.from({ length: 10 }, () => "complete_the_words"),
+  },
+  {
+    module: "routing",
+    promptKind: "daily_life_short",
+    taskType: "read_in_daily_life",
+    itemCount: 2,
+    questionTypes: ["main_purpose", "detail"],
+  },
+  {
+    module: "routing",
+    promptKind: "daily_life_short",
+    taskType: "read_in_daily_life",
+    itemCount: 2,
+    questionTypes: ["detail", "inference"],
+  },
+  {
+    module: "routing",
+    promptKind: "daily_life_long",
+    taskType: "read_in_daily_life",
+    itemCount: 4,
+    questionTypes: ["main_purpose", "detail", "negative_factual_information", "inference"],
+  },
+  {
+    module: "routing",
+    promptKind: "academic",
+    taskType: "read_an_academic_passage",
+    itemCount: 5,
+    questionTypes: [
+      "factual_information",
+      "negative_factual_information",
+      "rhetorical_purpose",
+      "vocabulary_in_context",
+      "important_idea",
+    ],
+  },
+  {
+    module: "hard",
+    promptKind: "complete_words",
+    taskType: "complete_the_words",
+    itemCount: 10,
+    questionTypes: Array.from({ length: 10 }, () => "complete_the_words"),
+  },
+  {
+    module: "hard",
+    promptKind: "academic",
+    taskType: "read_an_academic_passage",
+    itemCount: 5,
+    questionTypes: [
+      "factual_information",
+      "inference",
+      "vocabulary_in_context",
+      "negative_factual_information",
+      "paragraph_relationships",
+    ],
+  },
+];
+
+const READING_TOTAL_ITEM_COUNT = READING_BLOCK_BLUEPRINT.reduce((sum, block) => sum + block.itemCount, 0);
 
 const LISTENING_QUESTION_TYPE_BLUEPRINT: Array<{ stimulusType: "lecture" | "conversation"; questionType: string }> = [
   { stimulusType: "lecture", questionType: "gist_content" },
@@ -385,32 +453,195 @@ export class GenerationService {
   }
 
   private async requestReadingQuestionSetFromProvider(args: ProviderRequestArgs): Promise<GeneratedTask[]> {
-    const questionsPerPassage = READING_QUESTION_TYPE_BLUEPRINT.length;
-    const expectedQuestionCount = questionsPerPassage * READING_PASSAGE_COUNT;
     const normalizedOrder = Math.max(1, args.targetOrder);
-    const passageIndex = Math.floor((normalizedOrder - 1) / questionsPerPassage) + 1;
-    if (passageIndex > READING_PASSAGE_COUNT) {
+    const resolvedBlock = this.resolveReadingBlock(normalizedOrder);
+    if (!resolvedBlock) {
       throw new BadRequestException("READING generation is complete for this section instance.");
     }
-    const questionStartIndex = (passageIndex - 1) * questionsPerPassage + 1;
-    const requiredQuestionTypeOrder = READING_QUESTION_TYPE_BLUEPRINT.map(
-      (questionType, index) => `Q${questionStartIndex + index}: ${questionType}`,
-    );
 
+    if (resolvedBlock.block.promptKind === "complete_words") {
+      return this.requestReadingCompleteWordsBlockFromProvider(args, resolvedBlock);
+    }
+
+    if (resolvedBlock.block.promptKind === "academic") {
+      return this.requestReadingAcademicBlockFromProvider(args, resolvedBlock);
+    }
+
+    return this.requestReadingDailyLifeBlockFromProvider(args, resolvedBlock);
+  }
+
+  private resolveReadingBlock(targetOrder: number): {
+    block: ReadingBlockBlueprint;
+    blockIndex: number;
+    questionStartIndex: number;
+  } | null {
+    let runningTotal = 0;
+
+    for (let index = 0; index < READING_BLOCK_BLUEPRINT.length; index += 1) {
+      const block = READING_BLOCK_BLUEPRINT[index];
+      const startIndex = runningTotal + 1;
+      const endIndex = runningTotal + block.itemCount;
+      if (targetOrder >= startIndex && targetOrder <= endIndex) {
+        return {
+          block,
+          blockIndex: index,
+          questionStartIndex: startIndex,
+        };
+      }
+      runningTotal = endIndex;
+    }
+
+    return null;
+  }
+
+  private async requestReadingCompleteWordsBlockFromProvider(
+    args: ProviderRequestArgs,
+    resolvedBlock: { block: ReadingBlockBlueprint; blockIndex: number; questionStartIndex: number },
+  ): Promise<GeneratedTask[]> {
+    const blankCount = resolvedBlock.block.itemCount;
     const systemPrompt =
-      "Return strict JSON (no markdown) with keys: taskType, topic, instruction, passage, questions. questions must be an array of exactly 10 objects. Each question object must include questionType, question, options (4 choices), correctAnswer, explanation.";
+      "Return strict JSON (no markdown) with keys: taskType, topic, instruction, passage, blanks. blanks must be an array of exactly 10 objects. Each blank object must include blankIndex, maskedWord, correctAnswer, and explanation(optional).";
     const baseUserPrompt = [
-      "Generate one TOEFL 2026-style READING passage block.",
+      "Generate one TOEFL 2026-style READING Complete the Words block.",
       `Section: ${args.sectionType}`,
-      `Target passage index: ${passageIndex}/${READING_PASSAGE_COUNT}`,
-      `Target item order: ${normalizedOrder}`,
+      `Module: ${resolvedBlock.block.module}`,
+      `Target item order: ${args.targetOrder}`,
+      `Block question range: Q${resolvedBlock.questionStartIndex}-Q${resolvedBlock.questionStartIndex + blankCount - 1}`,
       `Generation context: ${JSON.stringify(args.contextPayload)}`,
-      "Generate exactly one academic passage and exactly 10 questions for that same passage.",
-      "Passage constraints: target around 800 words (recommended range 800-900), university-level expository tone, B2-C1 academic vocabulary with context clues.",
-      "Hard generation target: passage must be at least 800 words. Verify word count before final output.",
-      "Use 4-6 coherent academic paragraphs (no bullet lists).",
-      "Topic domains: biology, earth science, anthropology, archaeology, astronomy, art history, economics.",
+      "Generate one short academic paragraph of roughly 70-100 words and exactly 10 numbered word-completion blanks.",
+      "The paragraph should sound like an accessible textbook or academic reference excerpt.",
+      "Place the numbered blanks inside the passage using visible numbering such as [1], [2], and keep most blanks in the second sentence.",
+      "Each maskedWord must show the first part of the target word and replace the missing latter half with underscores.",
+      "Every correctAnswer must be a single full word that matches the maskedWord in the passage exactly.",
+      "Topic domains: psychology, marine biology, climate science, sociology, linguistics, public health, education.",
+      "All textual content must be generated fresh from this request. Do not use templates or canned text.",
+    ].join("\n\n");
+
+    const maxAttempts = 5;
+    let correction = "";
+    let lastIssue = "unknown payload issue";
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const userPrompt = correction ? `${baseUserPrompt}\n\n${correction}` : baseUserPrompt;
+      const parsed = await this.requestStructuredPayload({
+        args,
+        systemPrompt,
+        userPrompt,
+        requestLabel: "READING complete-the-words block generation",
+      });
+
+      try {
+        const topic = this.readString(parsed.topic) || `reading_complete_words_${resolvedBlock.blockIndex + 1}`;
+        const taskType = this.readString(parsed.taskType) || resolvedBlock.block.taskType;
+        const instruction = this.requireNonEmptyText(this.readString(parsed.instruction), "READING instruction");
+        const passage = this.ensureWordCountRange(
+          this.readString(parsed.passage),
+          50,
+          120,
+          `READING complete-the-words passage ${resolvedBlock.blockIndex + 1}`,
+        );
+        const blankObjects = this.readObjectArray(parsed.blanks);
+        if (blankObjects.length < blankCount) {
+          throw new BadRequestException(
+            `READING complete-the-words block requires ${blankCount} blanks but received ${blankObjects.length}.`,
+          );
+        }
+
+        const stimulusGroupId = randomUUID();
+        const wordCount = this.countWords(passage);
+        const tasks: GeneratedTask[] = [];
+
+        for (let index = 0; index < blankCount; index += 1) {
+          const absoluteQuestionIndex = resolvedBlock.questionStartIndex + index;
+          const blankObject = blankObjects[index] || {};
+          const maskedWord = this.requireNonEmptyText(
+            this.readString(blankObject.maskedWord) || this.readString(blankObject.blank) || this.readString(blankObject.prompt),
+            `READING blank ${absoluteQuestionIndex} maskedWord`,
+          );
+          const correctAnswer = this.requireNonEmptyText(
+            this.readString(blankObject.correctAnswer) || this.readString(blankObject.answer),
+            `READING blank ${absoluteQuestionIndex} correctAnswer`,
+          );
+          const answerExplanation =
+            this.readString(blankObject.explanation) || `The completed word is \"${correctAnswer}\".`;
+          const question = this.requireNonEmptyText(
+            this.readString(blankObject.question) || `Type the full word for blank ${index + 1}: ${maskedWord}`,
+            `READING blank ${absoluteQuestionIndex} question`,
+          );
+
+          tasks.push({
+            taskType,
+            topic,
+            audioUrl: null,
+            questionType: resolvedBlock.block.questionTypes[index] || "complete_the_words",
+            questionIndex: absoluteQuestionIndex,
+            questionSetSize: READING_TOTAL_ITEM_COUNT,
+            stimulusType: "passage",
+            stimulusGroupId,
+            promptPayload: {
+              sectionType: "READING",
+              contextAware: true,
+              inputType: "text",
+              instruction,
+              passage,
+              question,
+              correctAnswer,
+              answerExplanation,
+              wordCount,
+              topic,
+              questionType: resolvedBlock.block.questionTypes[index] || "complete_the_words",
+              questionIndex: absoluteQuestionIndex,
+              questionSetSize: READING_TOTAL_ITEM_COUNT,
+              stimulusType: "passage",
+              module: resolvedBlock.block.module,
+              blockIndex: resolvedBlock.blockIndex + 1,
+              blockType: resolvedBlock.block.promptKind,
+              blankIndex: index + 1,
+              maskedWord,
+            },
+          });
+        }
+
+        return tasks;
+      } catch (error) {
+        lastIssue = error instanceof Error ? error.message : "unknown payload issue";
+        if (attempt >= maxAttempts) {
+          break;
+        }
+        correction =
+          `Previous output was invalid: ${lastIssue}. Regenerate ONE complete-the-words block from scratch with one short passage and exactly 10 valid blanks.`;
+      }
+    }
+
+    throw new BadRequestException(
+      `Unable to generate valid READING complete-the-words block after ${maxAttempts} attempts: ${lastIssue}`,
+    );
+  }
+
+  private async requestReadingDailyLifeBlockFromProvider(
+    args: ProviderRequestArgs,
+    resolvedBlock: { block: ReadingBlockBlueprint; blockIndex: number; questionStartIndex: number },
+  ): Promise<GeneratedTask[]> {
+    const questionCount = resolvedBlock.block.itemCount;
+    const isShort = resolvedBlock.block.promptKind === "daily_life_short";
+    const requiredQuestionTypeOrder = resolvedBlock.block.questionTypes.map(
+      (questionType, index) => `Q${resolvedBlock.questionStartIndex + index}: ${questionType}`,
+    );
+    const systemPrompt =
+      "Return strict JSON (no markdown) with keys: taskType, topic, instruction, passage, questions. questions must be an array with one object per required question. Each question object must include questionType, question, options (4 choices), correctAnswer, explanation.";
+    const baseUserPrompt = [
+      "Generate one TOEFL 2026-style READING Read in Daily Life block.",
+      `Section: ${args.sectionType}`,
+      `Module: ${resolvedBlock.block.module}`,
+      `Target item order: ${args.targetOrder}`,
+      `Block question range: Q${resolvedBlock.questionStartIndex}-Q${resolvedBlock.questionStartIndex + questionCount - 1}`,
+      `Generation context: ${JSON.stringify(args.contextPayload)}`,
+      isShort
+        ? "Use a short real-life reading stimulus of about 15-60 words, such as a text message, notice, short email, reminder, or campus post."
+        : "Use a longer real-life reading stimulus of about 90-150 words, such as an email, membership message, announcement, invoice, or campus notice.",
+      `Generate exactly ${questionCount} questions for that same passage.`,
       `Required question type order: ${requiredQuestionTypeOrder.join(" | ")}.`,
+      "Question styles should stay practical and straightforward: main purpose, detail, negative factual information, or simple inference.",
       "Each question must have exactly 4 plausible options, one correctAnswer that exactly matches one option, and a short explanation.",
       "All textual content must be generated fresh from this request. Do not use templates or canned text.",
     ].join("\n\n");
@@ -425,28 +656,33 @@ export class GenerationService {
         args,
         systemPrompt,
         userPrompt,
-        requestLabel: "READING passage block generation",
+        requestLabel: `READING daily-life ${isShort ? "short" : "long"} block generation`,
       });
 
       try {
-        const topic = this.readString(parsed.topic) || `reading_topic_passage_${passageIndex}`;
-        const taskType = this.readString(parsed.taskType) || "read_an_academic_passage";
+        const topic = this.readString(parsed.topic) || `reading_daily_life_${resolvedBlock.blockIndex + 1}`;
+        const taskType = this.readString(parsed.taskType) || resolvedBlock.block.taskType;
         const instruction = this.requireNonEmptyText(this.readString(parsed.instruction), "READING instruction");
-        const passage = this.ensureMinimumWords(this.readString(parsed.passage), 620, `READING passage ${passageIndex}`);
+        const passage = this.ensureWordCountRange(
+          this.readString(parsed.passage),
+          isShort ? 15 : 90,
+          isShort ? 70 : 170,
+          `READING daily-life passage ${resolvedBlock.blockIndex + 1}`,
+        );
         const questionObjects = this.readObjectArray(parsed.questions);
-        if (questionObjects.length < questionsPerPassage) {
+        if (questionObjects.length < questionCount) {
           throw new BadRequestException(
-            `READING passage ${passageIndex} requires ${questionsPerPassage} questions but received ${questionObjects.length}.`,
+            `READING daily-life block requires ${questionCount} questions but received ${questionObjects.length}.`,
           );
         }
 
         const stimulusGroupId = randomUUID();
-        const passageWordCount = this.countWords(passage);
+        const wordCount = this.countWords(passage);
         const tasks: GeneratedTask[] = [];
 
-        for (let index = 0; index < questionsPerPassage; index += 1) {
-          const absoluteQuestionIndex = questionStartIndex + index;
-          const questionType = READING_QUESTION_TYPE_BLUEPRINT[index] || "detail";
+        for (let index = 0; index < questionCount; index += 1) {
+          const absoluteQuestionIndex = resolvedBlock.questionStartIndex + index;
+          const questionType = resolvedBlock.block.questionTypes[index] || "detail";
           const questionObject = questionObjects[index] || {};
           const question = this.requireNonEmptyText(
             this.readString(questionObject.question),
@@ -462,7 +698,7 @@ export class GenerationService {
             audioUrl: null,
             questionType,
             questionIndex: absoluteQuestionIndex,
-            questionSetSize: expectedQuestionCount,
+            questionSetSize: READING_TOTAL_ITEM_COUNT,
             stimulusType: "passage",
             stimulusGroupId,
             promptPayload: {
@@ -475,14 +711,15 @@ export class GenerationService {
               options,
               correctAnswer,
               answerExplanation,
-              passageIndex,
-              passageSetSize: READING_PASSAGE_COUNT,
-              wordCount: passageWordCount,
+              wordCount,
               topic,
               questionType,
               questionIndex: absoluteQuestionIndex,
-              questionSetSize: expectedQuestionCount,
+              questionSetSize: READING_TOTAL_ITEM_COUNT,
               stimulusType: "passage",
+              module: resolvedBlock.block.module,
+              blockIndex: resolvedBlock.blockIndex + 1,
+              blockType: resolvedBlock.block.promptKind,
             },
           });
         }
@@ -494,12 +731,133 @@ export class GenerationService {
           break;
         }
         correction =
-          `Previous output was invalid: ${lastIssue}. Regenerate ONE READING passage block from scratch with one passage and 10 fully valid questions.`;
+          `Previous output was invalid: ${lastIssue}. Regenerate ONE daily-life reading block from scratch with one passage and ${questionCount} fully valid questions.`;
       }
     }
 
     throw new BadRequestException(
-      `Unable to generate valid READING passage block after ${maxAttempts} attempts: ${lastIssue}`,
+      `Unable to generate valid READING daily-life block after ${maxAttempts} attempts: ${lastIssue}`,
+    );
+  }
+
+  private async requestReadingAcademicBlockFromProvider(
+    args: ProviderRequestArgs,
+    resolvedBlock: { block: ReadingBlockBlueprint; blockIndex: number; questionStartIndex: number },
+  ): Promise<GeneratedTask[]> {
+    const questionCount = resolvedBlock.block.itemCount;
+    const requiredQuestionTypeOrder = resolvedBlock.block.questionTypes.map(
+      (questionType, index) => `Q${resolvedBlock.questionStartIndex + index}: ${questionType}`,
+    );
+    const systemPrompt =
+      "Return strict JSON (no markdown) with keys: taskType, topic, instruction, passage, questions. questions must be an array of exactly 5 objects. Each question object must include questionType, question, options (4 choices), correctAnswer, explanation.";
+    const baseUserPrompt = [
+      "Generate one TOEFL 2026-style READING academic passage block.",
+      `Section: ${args.sectionType}`,
+      `Module: ${resolvedBlock.block.module}`,
+      `Target item order: ${args.targetOrder}`,
+      `Block question range: Q${resolvedBlock.questionStartIndex}-Q${resolvedBlock.questionStartIndex + questionCount - 1}`,
+      `Generation context: ${JSON.stringify(args.contextPayload)}`,
+      "Generate exactly one academic passage and exactly 5 questions for that same passage.",
+      "Passage constraints: roughly 170-240 words, university-level but accessible, contemporary academic topic, B2-C1 vocabulary with context clues.",
+      "Use 2-4 coherent paragraphs (no bullet lists).",
+      "Topics should feel modern and relevant: urban ecology, consumer behavior, public health, education, digital communication, environmental science, social behavior.",
+      `Required question type order: ${requiredQuestionTypeOrder.join(" | ")}.`,
+      "Across the two academic blocks, the simulator covers the 2026 academic question families: factual, negative factual, rhetorical purpose, vocabulary, inference, paragraph relationships, and important idea.",
+      "Each question must have exactly 4 plausible options, one correctAnswer that exactly matches one option, and a short explanation.",
+      "All textual content must be generated fresh from this request. Do not use templates or canned text.",
+    ].join("\n\n");
+
+    const maxAttempts = 5;
+    let correction = "";
+    let lastIssue = "unknown payload issue";
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const userPrompt = correction ? `${baseUserPrompt}\n\n${correction}` : baseUserPrompt;
+      const parsed = await this.requestStructuredPayload({
+        args,
+        systemPrompt,
+        userPrompt,
+        requestLabel: "READING academic block generation",
+      });
+
+      try {
+        const topic = this.readString(parsed.topic) || `reading_academic_${resolvedBlock.blockIndex + 1}`;
+        const taskType = this.readString(parsed.taskType) || resolvedBlock.block.taskType;
+        const instruction = this.requireNonEmptyText(this.readString(parsed.instruction), "READING instruction");
+        const passage = this.ensureWordCountRange(
+          this.readString(parsed.passage),
+          150,
+          280,
+          `READING academic passage ${resolvedBlock.blockIndex + 1}`,
+        );
+        const questionObjects = this.readObjectArray(parsed.questions);
+        if (questionObjects.length < questionCount) {
+          throw new BadRequestException(
+            `READING academic block requires ${questionCount} questions but received ${questionObjects.length}.`,
+          );
+        }
+
+        const stimulusGroupId = randomUUID();
+        const wordCount = this.countWords(passage);
+        const tasks: GeneratedTask[] = [];
+
+        for (let index = 0; index < questionCount; index += 1) {
+          const absoluteQuestionIndex = resolvedBlock.questionStartIndex + index;
+          const questionType = resolvedBlock.block.questionTypes[index] || "detail";
+          const questionObject = questionObjects[index] || {};
+          const question = this.requireNonEmptyText(
+            this.readString(questionObject.question),
+            `READING question ${absoluteQuestionIndex}`,
+          );
+          const options = this.normalizeOptions(this.readStringArray(questionObject.options));
+          const correctAnswer = this.resolveCorrectAnswer(questionObject, options);
+          const answerExplanation = this.resolveAnswerExplanation(questionObject, correctAnswer);
+
+          tasks.push({
+            taskType,
+            topic,
+            audioUrl: null,
+            questionType,
+            questionIndex: absoluteQuestionIndex,
+            questionSetSize: READING_TOTAL_ITEM_COUNT,
+            stimulusType: "passage",
+            stimulusGroupId,
+            promptPayload: {
+              sectionType: "READING",
+              contextAware: true,
+              inputType: "choice",
+              instruction,
+              passage,
+              question,
+              options,
+              correctAnswer,
+              answerExplanation,
+              wordCount,
+              topic,
+              questionType,
+              questionIndex: absoluteQuestionIndex,
+              questionSetSize: READING_TOTAL_ITEM_COUNT,
+              stimulusType: "passage",
+              module: resolvedBlock.block.module,
+              blockIndex: resolvedBlock.blockIndex + 1,
+              blockType: resolvedBlock.block.promptKind,
+            },
+          });
+        }
+
+        return tasks;
+      } catch (error) {
+        lastIssue = error instanceof Error ? error.message : "unknown payload issue";
+        if (attempt >= maxAttempts) {
+          break;
+        }
+        correction =
+          `Previous output was invalid: ${lastIssue}. Regenerate ONE academic reading block from scratch with one passage and 5 fully valid questions.`;
+      }
+    }
+
+    throw new BadRequestException(
+      `Unable to generate valid READING academic block after ${maxAttempts} attempts: ${lastIssue}`,
     );
   }
 
@@ -925,6 +1283,10 @@ export class GenerationService {
     }
 
     const normalized = transcript.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      return [];
+    }
+
     const speakerTurns =
       normalized.match(/[A-Za-z][A-Za-z ]{1,24}:[\s\S]*?(?=(?:\s+[A-Za-z][A-Za-z ]{1,24}:)|$)/g) || [];
 
@@ -1248,7 +1610,7 @@ export class GenerationService {
       const options = this.normalizeOptions(this.readStringArray(payload.options));
       const correctAnswer = this.resolveCorrectAnswer(payload, options);
       const answerExplanation = this.resolveAnswerExplanation(payload, correctAnswer);
-      const passage = this.ensureMinimumWords(this.readString(payload.passage), 620, "READING passage");
+      const passage = this.ensureWordCountRange(this.readString(payload.passage), 150, 280, "READING passage");
 
       return {
         sectionType,
@@ -1260,7 +1622,11 @@ export class GenerationService {
         options,
         correctAnswer,
         answerExplanation,
+        passageIndex: 1,
+        passageSetSize: 2,
         wordCount: this.countWords(passage),
+        questionSetSize: READING_TOTAL_ITEM_COUNT,
+        stimulusType: "passage",
         topic,
       };
     }
@@ -1331,11 +1697,11 @@ export class GenerationService {
     if (sectionType === "READING") {
       return [
         "Reading requirements:",
-        "- Generate one READING passage block per request: one academic passage plus 10 questions for that same passage.",
-        "- Passage target length: around 800 words (recommended range 800-900), TOEFL-style expository tone, B2-C1 academic vocabulary.",
-        "- Every question must provide exactly 4 options, one matching correctAnswer, and a concise explanation.",
-        "- Use topic domains such as biology, earth science, anthropology, archaeology, astronomy, art history, or economics.",
-        "- Keep objective paragraph-based organization (no template/canned text).",
+        "- Reading now uses a fixed 48-item TOEFL 2026 simulator path.",
+        "- Allowed reading task families: Complete the Words, Read in Daily Life, and Read an Academic Passage.",
+        "- Complete the Words uses short academic paragraphs with text-entry blank answers.",
+        "- Read in Daily Life uses short practical texts with multiple-choice questions.",
+        "- Academic reading uses short ~200-word passages with 5 multiple-choice questions.",
       ].join("\n");
     }
 
@@ -1489,6 +1855,22 @@ export class GenerationService {
     if (wordCount < minimumWords) {
       throw new BadRequestException(
         `${fieldLabel} is too short: expected at least ${minimumWords} words, got ${wordCount}.`,
+      );
+    }
+
+    return cleaned;
+  }
+
+  private ensureWordCountRange(value: string, minimumWords: number, maximumWords: number, fieldLabel: string): string {
+    const cleaned = value.trim();
+    if (!cleaned) {
+      throw new BadRequestException(`${fieldLabel} is missing in provider output.`);
+    }
+
+    const wordCount = this.countWords(cleaned);
+    if (wordCount < minimumWords || wordCount > maximumWords) {
+      throw new BadRequestException(
+        `${fieldLabel} must be between ${minimumWords} and ${maximumWords} words, got ${wordCount}.`,
       );
     }
 
@@ -1660,7 +2042,7 @@ export class GenerationService {
   private pickTaskType(sectionType: SectionType): string {
     switch (sectionType) {
       case "READING":
-        return "read_academic_passage";
+        return "read_an_academic_passage";
       case "LISTENING":
         return "listen_conversation";
       case "SPEAKING":
